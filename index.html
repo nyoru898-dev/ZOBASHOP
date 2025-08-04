@@ -1,0 +1,1902 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>zobashop - รหัสเกมราคาดีที่สุด</title>
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Google Fonts - Inter for a modern look -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    
+    <!-- Firebase SDK Imports -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, getDoc, setDoc, updateDoc, deleteDoc, onSnapshot, collection, query, where, addDoc, getDocs, limit, or } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // Global Firebase variables (provided by Canvas environment)
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        
+        // IMPORTANT: REPLACE THE EMPTY OBJECT BELOW WITH YOUR ACTUAL FIREBASE CONFIGURATION
+        // You can find this in your Firebase Project Settings -> Your apps -> Web app
+        const YOUR_FIREBASE_CONFIG = {
+            apiKey: "AIzaSyDlfaoyU2zSnL959qW3IeAtihlKZAOTKJk",
+            authDomain: "zobashop-af386.firebaseapp.com",
+            projectId: "zobashop-af386",
+            storageBucket: "zobashop-af386.firebasestorage.app",
+            messagingSenderId: "654601482193",
+            appId: "1:654601482193:web:02ea4ea461e22128fcfaf0"
+        }; 
+
+        // Use the Canvas provided config if available, otherwise use your hardcoded config
+        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : YOUR_FIREBASE_CONFIG;
+        
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+
+        let app;
+        let db;
+        let auth;
+        let currentUserId = null; // เก็บ User ID ของผู้ใช้ที่เข้าสู่ระบบ
+        let currentUser = null; // เก็บข้อมูลผู้ใช้ทั้งหมดจาก Firestore
+        let isAuthReady = false; // แฟล็กเพื่อยืนยันว่า Firebase Auth พร้อมใช้งานแล้ว
+
+        // Data arrays (จะถูกดึงมาจาก Firestore)
+        let adminSettings = {};
+        let users = [];
+        let products = [];
+        let keys = [];
+        let pendingPayments = [];
+        let inbox = [];
+
+        /**
+         * @function initializeFirebase
+         * @description Initializes Firebase app, authentication, and Firestore.
+         * Sets up the authentication state listener to manage current user.
+         */
+        document.addEventListener('DOMContentLoaded', () => {
+            // Check if firebaseConfig is actually populated
+            if (Object.keys(firebaseConfig).length === 0 || !firebaseConfig.apiKey) {
+                console.error("Firebase configuration is missing or incomplete. Please provide your Firebase config in YOUR_FIREBASE_CONFIG.");
+                alert("เกิดข้อผิดพลาด: การตั้งค่า Firebase ไม่สมบูรณ์ กรุณาตรวจสอบ Console เพื่อดูรายละเอียดเพิ่มเติมและแก้ไขโค้ด");
+                return; // Stop execution if config is bad
+            }
+
+            app = initializeApp(firebaseConfig);
+            auth = getAuth(app);
+            db = getFirestore(app);
+
+            onAuthStateChanged(auth, async (user) => {
+                console.log("onAuthStateChanged triggered. Raw User object:", user);
+                if (user) {
+                    currentUserId = user.uid;
+                    console.log("onAuthStateChanged: User UID:", currentUserId);
+                    // Fetch user data from Firestore to get isAdmin status
+                    const userDocRef = doc(db, `artifacts/${appId}/public/data/users`, currentUserId);
+                    try {
+                        const userDocSnap = await getDoc(userDocRef);
+                        if (userDocSnap.exists()) {
+                            currentUser = { id: userDocSnap.id, ...userDocSnap.data() };
+                            console.log("onAuthStateChanged: currentUser set from Firestore:", currentUser);
+                        } else {
+                            // This case might happen for newly signed-in anonymous users before their data is saved
+                            currentUser = { id: user.uid, username: user.displayName || 'Guest', email: user.email || 'N/A', isAdmin: false };
+                            console.log("onAuthStateChanged: currentUser set as default/guest (doc not found):", currentUser);
+                        }
+                    } catch (error) {
+                        console.error("onAuthStateChanged: Error fetching user doc:", error);
+                        currentUser = { id: user.uid, username: user.displayName || 'Guest', email: 'N/A', isAdmin: false };
+                    }
+                } else {
+                    // User is null (logged out or not yet authenticated)
+                    console.log("onAuthStateChanged: User is null. Attempting anonymous or custom token sign-in.");
+                    if (initialAuthToken) {
+                        try {
+                            const userCredential = await signInWithCustomToken(auth, initialAuthToken);
+                            currentUserId = userCredential.user.uid;
+                            console.log("onAuthStateChanged: Signed in with custom token. User UID:", currentUserId);
+                            const userDocRef = doc(db, `artifacts/${appId}/public/data/users`, currentUserId);
+                            const userDocSnap = await getDoc(userDocRef);
+                            if (userDocSnap.exists()) {
+                                currentUser = { id: userDocSnap.id, ...userDocSnap.data() };
+                                console.log("onAuthStateChanged: currentUser set from Firestore via custom token:", currentUser);
+                            } else {
+                                currentUser = { id: userCredential.user.uid, username: userCredential.user.displayName || 'Guest', email: userCredential.user.email || 'N/A', isAdmin: false };
+                                console.log("onAuthStateChanged: currentUser set as default/guest via custom token (doc not found):", currentUser);
+                            }
+                        } catch (error) {
+                            console.error("onAuthStateChanged: Error signing in with custom token, falling back to anonymous:", error);
+                            await signInAnonymously(auth);
+                            currentUserId = auth.currentUser.uid;
+                            currentUser = { id: auth.currentUser.uid, username: 'Guest', email: 'N/A', isAdmin: false };
+                            console.log("onAuthStateChanged: currentUser set as anonymous fallback:", currentUser);
+                        }
+                    } else {
+                        await signInAnonymously(auth);
+                        currentUserId = auth.currentUser.uid;
+                        currentUser = { id: auth.currentUser.uid, username: 'Guest', email: 'N/A', isAdmin: false };
+                        console.log("onAuthStateChanged: currentUser set as anonymous:", currentUser);
+                    }
+                }
+                isAuthReady = true;
+                console.log("onAuthStateChanged: Firebase Auth Ready. Final User ID:", currentUserId, "Final currentUser:", currentUser);
+                // When Auth is ready, set up all Firestore listeners
+                setupFirestoreListeners();
+                checkLoginStatus(); // Update UI based on user status (including admin status)
+                updateAdminDashboardSummary(); // Initial update of admin dashboard summary
+            });
+
+            // Event listeners for forms (moved here to ensure Firebase is initialized)
+            document.getElementById('login-form').addEventListener('submit', handleLogin);
+            document.getElementById('register-form').addEventListener('submit', handleRegister);
+            document.getElementById('submit-payment-button').addEventListener('click', handleSubmitPayment);
+        });
+
+        /**
+         * @function setupFirestoreListeners
+         * @description Sets up real-time listeners for all necessary Firestore collections.
+         * Data is updated automatically when changes occur in the database.
+         */
+        function setupFirestoreListeners() {
+            // Listener สำหรับ Admin Settings
+            const adminSettingsRef = doc(db, `artifacts/${appId}/public/data/adminSettings/settings`);
+            onSnapshot(adminSettingsRef, (docSnap) => {
+                if (docSnap.exists()) {
+                    adminSettings = docSnap.data();
+                    updateDynamicSettings();
+                } else {
+                    console.log("Admin settings document does not exist. Initializing default settings.");
+                    // ตั้งค่าเริ่มต้นหากยังไม่มี
+                    setDoc(adminSettingsRef, {
+                        homepageHeadline: 'ปลดล็อกโลกแห่งเกม <span class="text-yellow-300">ที่ zobashop</span>',
+                        featuredProductsTitle: 'เกมยอดนิยมประจำสัปดาห์',
+                        shopLogoUrl: 'https://placehold.co/50x50/ffffff/000000?text=LOGO',
+                        lineId: '@zobashop',
+                        lineQrUrl: 'https://placehold.co/200x200/00b900/ffffff?text=Line+QR',
+                        bankName: 'กสิกรไทย', // Updated default bank name
+                        accountNumber: '1578077827', // Updated default account number
+                        accountHolderName: 'กันตภณ ไชป้อ' // Updated default account holder name
+                    }, { merge: true });
+                }
+            }, (error) => {
+                console.error("Error fetching admin settings:", error);
+            });
+
+            // Listener สำหรับ Users (สำหรับแผงควบคุมแอดมินและสถานะผู้ใช้)
+            const usersCollectionRef = collection(db, `artifacts/${appId}/public/data/users`);
+            onSnapshot(usersCollectionRef, (snapshot) => {
+                users = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+                updateAdminDashboardSummary(); // อัปเดตจำนวนผู้ใช้
+                renderUserManagement(); // อัปเดตรายการผู้ใช้ในแผงควบคุมแอดมิน
+            }, (error) => {
+                console.error("Error fetching users:", error);
+            });
+
+            // Listener สำหรับ Products
+            const productsCollectionRef = collection(db, `artifacts/${appId}/public/data/products`);
+            onSnapshot(productsCollectionRef, (snapshot) => {
+                products = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+                renderFeaturedProducts();
+                renderProductCards();
+                renderProductManagement(); // อัปเดตรายการสินค้าในแผงควบคุมแอดมิน
+                populateKeyProductSelect(); // อัปเดตรายการสินค้าใน Key Management
+                updateAdminDashboardSummary(); // อัปเดตจำนวนสินค้า
+            }, (error) => {
+                console.error("Error fetching products:", error);
+            });
+
+            // Listener สำหรับ Keys
+            const keysCollectionRef = collection(db, `artifacts/${appId}/public/data/keys`);
+            onSnapshot(keysCollectionRef, (snapshot) => {
+                keys = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+                renderKeyManagement(); // อัปเดตรายการคีย์ในแผงควบคุมแอดมิน
+            }, (error) => {
+                console.error("Error fetching keys:", error);
+            });
+
+            // Listener สำหรับ Pending Payments
+            const pendingPaymentsCollectionRef = collection(db, `artifacts/${appId}/public/data/pendingPayments`);
+            onSnapshot(pendingPaymentsCollectionRef, (snapshot) => {
+                pendingPayments = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+                renderSlipVerification(); // อัปเดตรายการสลิปในแผงควบคุมแอดมิน
+                updateAdminDashboardSummary(); // อัปเดตจำนวนสลิปรอตรวจสอบ
+            }, (error) => {
+                console.error("Error fetching pending payments:", error);
+            });
+
+            // Listener สำหรับ Inbox (สำหรับผู้ใช้ปัจจุบัน)
+            // Listener นี้จะถูกตั้งค่าเมื่อ currentUserId พร้อมใช้งาน
+            if (currentUserId) {
+                const inboxCollectionRef = collection(db, `artifacts/${appId}/users/${currentUserId}/inbox`);
+                onSnapshot(inboxCollectionRef, (snapshot) => {
+                    inbox = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+                    renderInbox();
+                }, (error) => {
+                    console.error("Error fetching inbox messages:", error);
+                });
+            }
+        }
+
+
+        /**
+         * @function showPage
+         * @description Controls the visibility of different page sections.
+         * @param {string} pageId - The ID of the section to show.
+         */
+        window.showPage = function(pageId) {
+            console.log(`showPage called: Attempting to show ${pageId}`);
+            document.querySelectorAll('.page-section').forEach(section => {
+                section.classList.remove('active');
+            });
+            document.getElementById(pageId).classList.add('active');
+            console.log(`showPage: ${pageId} is now active.`);
+        }
+
+        /**
+         * @function toggleMobileMenu
+         * @description Toggles the visibility of the mobile navigation menu.
+         */
+        window.toggleMobileMenu = function() {
+            const mobileMenu = document.getElementById('mobile-menu');
+            mobileMenu.classList.toggle('hidden');
+        }
+        document.getElementById('mobile-menu-button').addEventListener('click', toggleMobileMenu);
+
+        /**
+         * @function checkLoginStatus
+         * @description Updates the UI based on the current user's login and admin status.
+         */
+        function checkLoginStatus() {
+            console.log("checkLoginStatus called. CurrentUser object:", currentUser);
+            if (currentUser && currentUser.username !== 'Guest') {
+                document.getElementById('auth-links').classList.add('hidden');
+                document.getElementById('user-info').classList.remove('hidden');
+                document.getElementById('username-display').innerText = currentUser.username;
+                document.getElementById('mobile-auth-links').classList.add('hidden');
+                document.getElementById('mobile-user-info').classList.remove('hidden');
+                document.getElementById('mobile-username-display').innerText = currentUser.username;
+                
+                // ตรวจสอบและแสดงลิงก์แผงควบคุมสำหรับ Admin
+                const existingAdminLink = document.querySelector('#user-info .admin-link');
+                if (currentUser.isAdmin) {
+                    if (!existingAdminLink) {
+                        const adminLink = document.createElement('a');
+                        adminLink.href = '#';
+                        adminLink.className = 'text-white hover:text-blue-200 transition duration-300 ease-in-out font-medium admin-link';
+                        adminLink.innerText = 'แผงควบคุม';
+                        adminLink.onclick = () => { showPage('admin-dashboard-section'); updateAdminDashboardSummary(); return false; };
+                        document.querySelector('#user-info').prepend(adminLink);
+                        console.log("checkLoginStatus: Admin link added.");
+                    } else {
+                        console.log("checkLoginStatus: Admin link already exists.");
+                    }
+                } else {
+                    if (existingAdminLink) {
+                        existingAdminLink.remove();
+                        console.log("checkLoginStatus: Admin link removed.");
+                    } else {
+                        console.log("checkLoginStatus: Admin link not present for non-admin user.");
+                    }
+                }
+                console.log("checkLoginStatus: User is logged in. UI updated.");
+            } else {
+                document.getElementById('auth-links').classList.remove('hidden');
+                document.getElementById('user-info').classList.add('hidden');
+                document.getElementById('mobile-auth-links').classList.remove('hidden');
+                document.getElementById('mobile-user-info').classList.add('hidden');
+                const existingAdminLink = document.querySelector('#user-info .admin-link');
+                if (existingAdminLink) {
+                    existingAdminLink.remove();
+                }
+                console.log("checkLoginStatus: User is guest or logged out. UI updated.");
+            }
+        }
+
+        /**
+         * @function handleLogin
+         * @description Handles user login, including special handling for the hardcoded admin account.
+         * @param {Event} event - The form submission event.
+         */
+        async function handleLogin(event) {
+            event.preventDefault();
+            if (!isAuthReady) { console.log("handleLogin: Firebase not ready for login."); return; }
+
+            const loginInput = document.getElementById('login-username').value;
+            const password = document.getElementById('login-password').value;
+            const messageEl = document.getElementById('login-message');
+            const loadingSpinner = document.querySelector('#login-form .loading-spinner');
+
+            messageEl.classList.add('hidden'); // Hide old message
+            if (loadingSpinner) loadingSpinner.classList.remove('hidden'); // Show spinner
+
+            try {
+                // --- START MODIFICATION FOR ADMIN ACCESS (FOR DEMONSTRATION ONLY) ---
+                // Check if it's the hardcoded admin account
+                if (loginInput === 'nyoru898@gmail.com' && password === 'NO.GOD.1') {
+                    console.log("handleLogin: Attempting admin login for nyoru898@gmail.com");
+                    let userDocRef;
+                    let userDocSnap;
+
+                    // 1. Try to find the user by email
+                    const q = query(collection(db, `artifacts/${appId}/public/data/users`), where("email", "==", loginInput));
+                    const querySnapshot = await getDocs(q);
+
+                    if (!querySnapshot.empty) {
+                        userDocSnap = querySnapshot.docs[0];
+                        userDocRef = doc(db, `artifacts/${appId}/public/data/users`, userDocSnap.id);
+                        console.log("handleLogin: Admin email found in Firestore with ID:", userDocSnap.id);
+                    } else {
+                        // 2. If not found, create a new account with a generated ID
+                        console.log("handleLogin: Admin email not found, creating new admin user.");
+                        userDocRef = doc(collection(db, `artifacts/${appId}/public/data/users`)); // Get a new document reference with an auto-generated ID
+                        await setDoc(userDocRef, { // Use setDoc to set data for this specific ID
+                            username: 'NO.GOD.1', // Set username as specified
+                            email: loginInput,
+                            password: password, // In a real system, passwords should be hashed!
+                            isAdmin: true
+                        });
+                        console.log("handleLogin: New admin user created with ID:", userDocRef.id);
+                    }
+
+                    // 3. Fetch latest data and ensure isAdmin status is true
+                    userDocSnap = await getDoc(userDocRef);
+                    if (userDocSnap.exists()) {
+                        const userData = userDocSnap.data();
+                        if (!userData.isAdmin) {
+                            console.log("handleLogin: Updating admin status to true for nyoru898@gmail.com");
+                            await updateDoc(userDocRef, { isAdmin: true });
+                        }
+                        // Fetch again to ensure currentUser is the absolute latest data from Firestore
+                        const updatedUserDocSnap = await getDoc(userDocRef);
+                        currentUser = { id: updatedUserDocSnap.id, ...updatedUserDocSnap.data() };
+                        currentUserId = updatedUserDocSnap.id;
+                        console.log("handleLogin: currentUser updated after admin check/update:", currentUser);
+                    } else {
+                        throw new Error("handleLogin: Failed to retrieve admin user data after creation/check.");
+                    }
+                    
+                    if (loadingSpinner) loadingSpinner.classList.add('hidden'); // Hide spinner
+                    showMessage('login-message', 'เข้าสู่ระบบสำเร็จ! คุณเป็นผู้ดูแลระบบแล้ว กำลังเปลี่ยนหน้า...', 'green');
+                    
+                    // Call functions to update UI and change page immediately
+                    checkLoginStatus(); // Update UI and show admin link
+                    showPage('admin-dashboard-section'); // Go directly to admin dashboard
+                    console.log("handleLogin: Admin login successful, redirected to dashboard immediately.");
+                    return; // Exit function after handling admin login
+                }
+                // --- END MODIFICATION FOR ADMIN ACCESS ---
+
+                // Normal login code for regular users
+                let userDocSnap;
+                const q = query(collection(db, `artifacts/${appId}/public/data/users`), 
+                                or(where("email", "==", loginInput), where("username", "==", loginInput)));
+                const querySnapshot = await getDocs(q);
+
+                if (!querySnapshot.empty) {
+                    userDocSnap = querySnapshot.docs[0];
+                    const userData = userDocSnap.data();
+
+                    if (userData.password === password) { // For demo data, check password directly
+                        currentUser = { id: userDocSnap.id, ...userData };
+                        currentUserId = userDocSnap.id; // Ensure currentUserId is set
+                        if (loadingSpinner) loadingSpinner.classList.add('hidden'); // Hide spinner
+                        showMessage('login-message', 'เข้าสู่ระบบสำเร็จ!', 'green');
+                        setTimeout(() => {
+                            checkLoginStatus();
+                            showPage('home-section');
+                        }, 1000); // Keep setTimeout for better UX for regular users
+                    } else {
+                        if (loadingSpinner) loadingSpinner.classList.add('hidden'); // Hide spinner
+                        showMessage('login-message', 'ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง', 'red');
+                    }
+                } else {
+                    if (loadingSpinner) loadingSpinner.classList.add('hidden'); // Hide spinner
+                    showMessage('login-message', 'ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง', 'red');
+                }
+            } catch (error) {
+                console.error("handleLogin: Error during login:", error);
+                if (loadingSpinner) loadingSpinner.classList.add('hidden'); // Hide spinner
+                showMessage('login-message', 'เกิดข้อผิดพลาดในการเข้าสู่ระบบ!', 'red');
+            }
+        }
+
+        /**
+         * @function logout
+         * @description Handles user logout.
+         */
+        window.logout = async function() {
+            if (!isAuthReady) { console.log("Firebase not ready for logout."); return; }
+            try {
+                await auth.signOut(); // ออกจากระบบ Firebase Auth
+                currentUser = null;
+                currentUserId = null;
+                checkLoginStatus();
+                showPage('home-section');
+            } catch (error) {
+                console.error("Error during logout:", error);
+                showMessage('user-info-message', 'เกิดข้อผิดพลาดในการออกจากระบบ!', 'red'); // แสดงข้อความใน UI ถ้ามี
+            }
+        }
+
+        /**
+         * @function renderFeaturedProducts
+         * @description Renders featured product cards on the homepage.
+         */
+        function renderFeaturedProducts() {
+            const featuredProducts = products.filter(p => p.isFeatured);
+            const container = document.getElementById('featured-product-cards');
+            container.innerHTML = '';
+            if (featuredProducts.length === 0) {
+                container.innerHTML = '<p class="text-center text-gray-500 col-span-full">ไม่มีสินค้าแนะนำในขณะนี้</p>';
+            }
+            featuredProducts.forEach(product => {
+                const card = createProductCard(product);
+                container.appendChild(card);
+            });
+        }
+        
+        /**
+         * @function renderProductCards
+         * @description Renders all product cards on the products page.
+         */
+        window.renderProductCards = function() {
+            const container = document.getElementById('all-product-cards');
+            container.innerHTML = '';
+            if (products.length === 0) {
+                container.innerHTML = '<p class="text-center text-gray-500 col-span-full">ไม่มีสินค้าในขณะนี้</p>';
+            }
+            products.forEach(product => {
+                const card = createProductCard(product);
+                container.appendChild(card);
+            });
+        }
+
+        /**
+         * @function createProductCard
+         * @description Creates an HTML element for a product card.
+         * @param {Object} product - The product data.
+         * @returns {HTMLElement} The product card element.
+         */
+        function createProductCard(product) {
+            const card = document.createElement('div');
+            card.className = 'bg-white rounded-xl shadow-lg hover:shadow-2xl transition-shadow duration-300 overflow-hidden product-card';
+            card.innerHTML = `
+                <img src="${product.imageUrl}" alt="${product.name}" class="w-full h-48 object-cover">
+                <div class="p-6 flex flex-col flex-grow">
+                    <h3 class="text-2xl font-bold text-blue-800 mb-2">${product.name}</h3>
+                    <p class="text-gray-600 flex-grow">${product.description}</p>
+                    <div class="mt-4 flex items-center justify-between">
+                        <span class="text-3xl font-extrabold text-green-600">฿${product.price}</span>
+                        <button class="bg-blue-600 text-white py-2 px-6 rounded-full hover:bg-blue-700 transition duration-300" onclick="showPaymentPage('${product.name}', ${product.price}, '${product.id}');">
+                            ซื้อเลย
+                        </button>
+                    </div>
+                </div>
+            `;
+            return card;
+        }
+
+        /**
+         * @function showPaymentPage
+         * @description Displays the payment page and shows bank account details for the selected product.
+         * @param {string} productName - Name of the product.
+         * @param {number} productPrice - Price of the product.
+         * @param {string} productId - ID of the product.
+         */
+        window.showPaymentPage = function(productName, productPrice, productId) {
+            document.getElementById('payment-product-name').innerText = productName;
+            document.getElementById('payment-product-price').innerText = productPrice;
+            document.getElementById('payment-product-id').value = productId;
+            
+            // Display bank details dynamically from admin settings
+            document.getElementById('payment-bank-name').innerText = adminSettings.bankName || 'N/A';
+            document.getElementById('payment-account-number').innerText = adminSettings.accountNumber || 'N/A';
+            document.getElementById('payment-account-holder-name').innerText = adminSettings.accountHolderName || 'N/A';
+
+            showPage('payment-section'); // แสดงหน้าชำระเงิน
+        }
+
+        /**
+         * @function renderContactSection
+         * @description Renders the contact information (Bank details and Line QR/ID) based on admin settings.
+         */
+        window.renderContactSection = function() {
+            const contactDetails = document.getElementById('contact-details'); // Changed ID for clarity
+            const bankName = adminSettings.bankName || 'N/A';
+            const accountNumber = adminSettings.accountNumber || 'N/A';
+            const accountHolderName = adminSettings.accountHolderName || 'N/A';
+            const lineId = adminSettings.lineId || '';
+            const lineQrImageUrl = adminSettings.lineQrUrl || 'https://placehold.co/200x200/00b900/ffffff?text=Line+QR';
+
+            contactDetails.innerHTML = `
+                <p class="text-2xl font-bold text-blue-700 mb-2">ข้อมูลบัญชีธนาคาร</p>
+                <p class="text-xl text-gray-800 mb-1">ธนาคาร: <span class="font-semibold">${bankName}</span></p>
+                <p class="text-xl text-gray-800 mb-1">เลขที่บัญชี: <span class="font-semibold">${accountNumber}</span></p>
+                <p class="text-xl text-gray-800 mb-4">ชื่อบัญชี: <span class="font-semibold">${accountHolderName}</span></p>
+                
+                <p class="text-center text-gray-700 text-lg mt-8">
+                    หากมีข้อสงสัยหรือต้องการความช่วยเหลือ โปรดติดต่อเราได้ที่ Line Official Account:
+                </p>
+                <img id="line-qr-image" src="${lineQrImageUrl}" alt="Line QR Code" class="w-48 h-48 mb-4 rounded-lg shadow-md border border-blue-300 mx-auto">
+                <p class="text-xl font-bold text-blue-700">Line ID: <a href="https://line.me/R/ti/p/${lineId}" target="_blank" class="hover:underline">${lineId}</a></p>
+            `;
+        }
+
+        /**
+         * @function updateAdminDashboardSummary
+         * @description Updates the summary statistics on the admin dashboard.
+         */
+        function updateAdminDashboardSummary() {
+            document.getElementById('admin-user-count').innerText = users.length;
+            document.getElementById('admin-product-count').innerText = products.length;
+            document.getElementById('admin-pending-slips-count').innerText = pendingPayments.length;
+            document.getElementById('pending-slips-badge').innerText = pendingPayments.length;
+            
+            // อัปเดตค่าใน input fields ของ Admin Settings
+            if (adminSettings && Object.keys(adminSettings).length > 0) {
+                const headlineInput = document.getElementById('homepage-headline-input');
+                if (headlineInput) headlineInput.value = adminSettings.homepageHeadline || '';
+                
+                const featuredTitleInput = document.getElementById('featured-products-title-input');
+                if (featuredTitleInput) featuredTitleInput.value = adminSettings.featuredProductsTitle || '';
+
+                const bankNameInput = document.getElementById('bank-name-input');
+                if (bankNameInput) bankNameInput.value = adminSettings.bankName || '';
+
+                const accountNumberInput = document.getElementById('account-number-input');
+                if (accountNumberInput) accountNumberInput.value = adminSettings.accountNumber || '';
+
+                const accountHolderNameInput = document.getElementById('account-holder-name-input');
+                if (accountHolderNameInput) accountHolderNameInput.value = adminSettings.accountHolderName || '';
+
+                const lineIdInput = document.getElementById('line-id-input');
+                if (lineIdInput) lineIdInput.value = adminSettings.lineId || '';
+
+                const lineQrUrlInput = document.getElementById('line-qr-url-input');
+                if (lineQrUrlInput) lineQrUrlInput.value = adminSettings.lineQrUrl || '';
+
+                const shopLogoUrlInput = document.getElementById('shop-logo-url-input');
+                if (shopLogoUrlInput) shopLogoUrlInput.value = adminSettings.shopLogoUrl || '';
+            }
+        }
+
+        /**
+         * @function updateDynamicSettings
+         * @description Updates dynamic elements on the page based on admin settings.
+         */
+        function updateDynamicSettings() {
+            if (adminSettings) {
+                const heroTitle = document.getElementById('hero-main-title');
+                if (heroTitle) heroTitle.innerHTML = adminSettings.homepageHeadline || 'ปลดล็อกโลกแห่งเกม';
+                
+                const featuredTitle = document.getElementById('featured-products-title');
+                if (featuredTitle) featuredTitle.innerHTML = adminSettings.featuredProductsTitle || 'เกมยอดนิยมประจำสัปดาห์';
+                
+                const shopLogo = document.getElementById('shop-logo');
+                if (shopLogo) shopLogo.src = adminSettings.shopLogoUrl || 'https://placehold.co/50x50/ffffff/000000?text=LOGO';
+            }
+            updateAdminDashboardSummary(); // ตรวจสอบให้แน่ใจว่า input ในแผงควบคุมแอดมินได้รับการอัปเดตด้วย
+            renderContactSection(); // เรนเดอร์ส่วนติดต่อใหม่เพื่ออัปเดต QR code
+        }
+
+        /**
+         * @function updateBankDetailsSettings
+         * @description Updates bank account details settings in Firestore from the admin panel.
+         */
+        window.updateBankDetailsSettings = async function() {
+            if (!isAuthReady) { console.log("Firebase not ready."); return; }
+            const adminSettingsRef = doc(db, `artifacts/${appId}/public/data/adminSettings/settings`);
+            try {
+                await updateDoc(adminSettingsRef, {
+                    bankName: document.getElementById('bank-name-input').value,
+                    accountNumber: document.getElementById('account-number-input').value,
+                    accountHolderName: document.getElementById('account-holder-name-input').value
+                });
+                showMessage('bank-qr-message', 'บันทึกการตั้งค่าบัญชีธนาคารเรียบร้อยแล้ว!', 'green');
+            } catch (error) {
+                console.error("Error updating bank details settings:", error);
+                showMessage('bank-qr-message', 'เกิดข้อผิดพลาดในการบันทึก!', 'red');
+            }
+        }
+
+        /**
+         * @function updateLineContactSettings
+         * @description Updates Line contact settings in Firestore from the admin panel.
+         */
+        window.updateLineContactSettings = async function() {
+            if (!isAuthReady) { console.log("Firebase not ready."); return; }
+            const adminSettingsRef = doc(db, `artifacts/${appId}/public/data/adminSettings/settings`);
+            try {
+                await updateDoc(adminSettingsRef, {
+                    lineId: document.getElementById('line-id-input').value,
+                    lineQrUrl: document.getElementById('line-qr-url-input').value
+                });
+                showMessage('line-contact-message', 'บันทึกข้อมูล Line เรียบร้อยแล้ว!', 'green');
+            } catch (error) {
+                console.error("Error updating Line contact settings:", error);
+                showMessage('line-contact-message', 'เกิดข้อผิดพลาดในการบันทึก!', 'red');
+            }
+        }
+
+        /**
+         * @function updateShopLogo
+         * @description Updates the shop logo URL in Firestore from the admin panel.
+         */
+        window.updateShopLogo = async function() {
+            if (!isAuthReady) { console.log("Firebase not ready."); return; }
+            const adminSettingsRef = doc(db, `artifacts/${appId}/public/data/adminSettings/settings`);
+            try {
+                await updateDoc(adminSettingsRef, {
+                    shopLogoUrl: document.getElementById('shop-logo-url-input').value
+                });
+                showMessage('logo-message', 'บันทึกโลโก้เรียบร้อยแล้ว!', 'green');
+            } catch (error) {
+                console.error("Error updating shop logo:", error);
+                showMessage('logo-message', 'เกิดข้อผิดพลาดในการบันทึก!', 'red');
+            }
+        }
+
+        /**
+         * @function showMessage
+         * @description Displays a message in a specified element, and hides it after a delay.
+         * @param {string} elementId - The ID of the HTML element to display the message in.
+         * @param {string} message - The message text.
+         * @param {string} type - 'green' for success, 'red' for error.
+         */
+        function showMessage(elementId, message, type) {
+            const el = document.getElementById(elementId);
+            if (!el) return; // ป้องกันข้อผิดพลาดหาก element ไม่มีอยู่
+            el.innerText = message;
+            el.classList.remove('hidden', 'text-green-600', 'text-red-500');
+            el.classList.add(type === 'green' ? 'text-green-600' : 'text-red-500');
+            
+            // ซ่อนข้อความหลังจาก 3 วินาที
+            setTimeout(() => {
+                el.classList.add('hidden');
+            }, 3000);
+        }
+
+        /**
+         * @function renderProductManagement
+         * @description Renders the list of products in the admin product management table.
+         */
+        window.renderProductManagement = function() {
+            const productListBody = document.getElementById('product-list-body');
+            if (!productListBody) return;
+
+            productListBody.innerHTML = '';
+            if (products.length === 0) {
+                productListBody.innerHTML = '<tr><td colspan="3" class="text-center text-gray-500">ไม่มีสินค้าในระบบ</td></tr>';
+            }
+            products.forEach(product => {
+                const row = productListBody.insertRow();
+                row.innerHTML = `
+                    <td>${product.name}</td>
+                    <td>฿${product.price}</td>
+                    <td>
+                        <button class="bg-yellow-500 text-white py-1 px-3 rounded-full text-sm hover:bg-yellow-600 transition duration-300" onclick="editProduct('${product.id}');">แก้ไข</button>
+                        <button class="bg-red-500 text-white py-1 px-3 rounded-full text-sm hover:bg-red-600 transition duration-300 ml-2" onclick="deleteProduct('${product.id}');">ลบ</button>
+                    </td>
+                `;
+            });
+            populateKeyProductSelect();
+        }
+
+        /**
+         * @function resetProductForm
+         * @description Resets the product form fields.
+         */
+        function resetProductForm() {
+            document.getElementById('product-id').value = '';
+            document.getElementById('product-name').value = '';
+            document.getElementById('product-price').value = '';
+            document.getElementById('product-image-url').value = '';
+            document.getElementById('product-description').value = '';
+            document.getElementById('product-form-message').classList.add('hidden');
+        }
+
+        /**
+         * @function handleProductFormSubmit
+         * @description Handles the submission of the product add/edit form.
+         * @param {Event} event - The form submission event.
+         */
+        document.getElementById('product-form').addEventListener('submit', async function(event) {
+            event.preventDefault();
+            if (!isAuthReady) { console.log("Firebase not ready."); return; }
+
+            const productId = document.getElementById('product-id').value;
+            const productName = document.getElementById('product-name').value;
+            const productPrice = parseFloat(document.getElementById('product-price').value);
+            const productImageUrl = document.getElementById('product-image-url').value;
+            const productDescription = document.getElementById('product-description').value;
+            const messageEl = document.getElementById('product-form-message');
+
+            if (!productName || isNaN(productPrice) || !productImageUrl || !productDescription) {
+                showMessage('product-form-message', 'กรุณากรอกข้อมูลสินค้าให้ครบถ้วนและราคาเป็นตัวเลขที่ถูกต้อง', 'red');
+                return;
+            }
+
+            try {
+                if (productId) {
+                    // แก้ไขสินค้าที่มีอยู่
+                    const productRef = doc(db, `artifacts/${appId}/public/data/products`, productId);
+                    await updateDoc(productRef, { name: productName, price: productPrice, imageUrl: productImageUrl, description: productDescription });
+                    showMessage('product-form-message', 'แก้ไขสินค้าเรียบร้อยแล้ว!', 'green');
+                } else {
+                    // เพิ่มสินค้าใหม่
+                    await addDoc(collection(db, `artifacts/${appId}/public/data/products`), {
+                        name: productName,
+                        price: productPrice,
+                        imageUrl: productImageUrl,
+                        description: productDescription,
+                        isFeatured: false // ตั้งค่าเริ่มต้นเป็น false
+                    });
+                    showMessage('product-form-message', 'เพิ่มสินค้าเรียบร้อยแล้ว!', 'green');
+                }
+                resetProductForm();
+            } catch (error) {
+                console.error("Error saving product:", error);
+                showMessage('product-form-message', 'เกิดข้อผิดพลาดในการบันทึกสินค้า!', 'red');
+            }
+        });
+
+        /**
+         * @function editProduct
+         * @description Populates the product form with data for editing.
+         * @param {string} id - The ID of the product to edit.
+         */
+        window.editProduct = function(id) {
+            const product = products.find(p => p.id === id);
+            if (product) {
+                document.getElementById('product-id').value = product.id;
+                document.getElementById('product-name').value = product.name;
+                document.getElementById('product-price').value = product.price;
+                document.getElementById('product-image-url').value = product.imageUrl;
+                document.getElementById('product-description').value = product.description;
+                document.getElementById('product-form-message').classList.add('hidden'); // Clear any previous messages
+            }
+        }
+
+        /**
+         * @function deleteProduct
+         * @description Deletes a product and its associated keys from Firestore.
+         * @param {string} id - The ID of the product to delete.
+         */
+        window.deleteProduct = async function(id) {
+            if (!isAuthReady) { console.log("Firebase not ready."); return; }
+            if (!confirm("คุณแน่ใจหรือไม่ว่าต้องการลบสินค้านี้และคีย์ที่เกี่ยวข้องทั้งหมด?")) {
+                return; // User cancelled
+            }
+            const productRef = doc(db, `artifacts/${appId}/public/data/products`, id);
+            try {
+                await deleteDoc(productRef);
+                // ลบคีย์ที่เกี่ยวข้องทั้งหมด
+                const q = query(collection(db, `artifacts/${appId}/public/data/keys`), where("productId", "==", id));
+                const querySnapshot = await getDocs(q);
+                const deleteKeyPromises = [];
+                querySnapshot.forEach((doc) => {
+                    deleteKeyPromises.push(deleteDoc(doc.ref));
+                });
+                await Promise.all(deleteKeyPromises);
+                showMessage('product-form-message', 'ลบสินค้าและคีย์ที่เกี่ยวข้องเรียบร้อยแล้ว!', 'green');
+            } catch (error) {
+                console.error("Error deleting product:", error);
+                showMessage('product-form-message', 'เกิดข้อผิดพลาดในการลบสินค้า!', 'red');
+            }
+        }
+
+        /**
+         * @function populateKeyProductSelect
+         * @description Populates the product selection dropdown in the key management section.
+         */
+        function populateKeyProductSelect() {
+            const select = document.getElementById('key-product-select');
+            if (!select) return;
+            select.innerHTML = '<option value="">เลือกสินค้า...</option>';
+            products.forEach(product => {
+                const option = document.createElement('option');
+                option.value = product.id;
+                option.innerText = product.name;
+                select.appendChild(option);
+            });
+        }
+
+        /**
+         * @function renderKeyManagement
+         * @description Renders the list of keys, categorized by product, in the admin key management section.
+         */
+        window.renderKeyManagement = function() {
+            const keyListsDiv = document.getElementById('key-lists');
+            if (!keyListsDiv) return;
+            keyListsDiv.innerHTML = '';
+
+            if (products.length === 0) {
+                keyListsDiv.innerHTML = '<p class="text-center text-gray-500">ไม่มีสินค้าให้จัดการคีย์ โปรดเพิ่มสินค้าก่อน</p>';
+                return;
+            }
+
+            products.forEach(product => {
+                const productKeys = keys.filter(k => k.productId === product.id);
+                const availableKeys = productKeys.filter(k => !k.isUsed);
+                const usedKeys = productKeys.filter(k => k.isUsed);
+
+                const productKeySection = document.createElement('div');
+                productKeySection.className = 'bg-white rounded-lg shadow-md p-4 mb-6 border border-blue-200';
+                productKeySection.innerHTML = `
+                    <h4 class="text-xl font-bold text-blue-700 mb-2">${product.name} (คีย์พร้อมใช้งาน: ${availableKeys.length})</h4>
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div>
+                            <p class="font-semibold text-gray-700 mb-2">คีย์พร้อมใช้งาน:</p>
+                            <ul class="list-disc list-inside text-gray-600">
+                                ${availableKeys.map(k => `<li>${k.code} <button class="text-red-500 hover:text-red-700 text-sm ml-2" onclick="deleteKey('${k.id}');">ลบ</button></li>`).join('')}
+                                ${availableKeys.length === 0 ? '<li>ไม่มีคีย์พร้อมใช้งาน</li>' : ''}
+                            </ul>
+                        </div>
+                        <div>
+                            <p class="font-semibold text-gray-700 mb-2">คีย์ที่ใช้ไปแล้ว:</p>
+                            <ul class="list-disc list-inside text-gray-600">
+                                ${usedKeys.map(k => `<li>${k.code}</li>`).join('')}
+                                ${usedKeys.length === 0 ? '<li>ไม่มีคีย์ที่ใช้ไปแล้ว</li>' : ''}
+                            </ul>
+                        </div>
+                    </div>
+                `;
+                keyListsDiv.appendChild(productKeySection);
+            });
+            populateKeyProductSelect();
+        }
+
+        /**
+         * @function addKeys
+         * @description Adds new game keys to a selected product in Firestore.
+         */
+        window.addKeys = async function() {
+            if (!isAuthReady) { console.log("Firebase not ready."); return; }
+            const productId = document.getElementById('key-product-select').value;
+            const keyCodesText = document.getElementById('key-code-input').value;
+            const messageEl = document.getElementById('key-management-message');
+
+            if (!productId || !keyCodesText) {
+                showMessage('key-management-message', 'กรุณาเลือกสินค้าและใส่รหัสคีย์', 'red');
+                return;
+            }
+
+            const newKeyCodes = keyCodesText.split('\n').map(s => s.trim()).filter(s => s !== '');
+            if (newKeyCodes.length === 0) {
+                showMessage('key-management-message', 'กรุณาใส่รหัสคีย์อย่างน้อยหนึ่งรหัส', 'red');
+                return;
+            }
+
+            const addKeyPromises = newKeyCodes.map(code => {
+                return addDoc(collection(db, `artifacts/${appId}/public/data/keys`), {
+                    productId: productId,
+                    code: code,
+                    isUsed: false
+                });
+            });
+            try {
+                await Promise.all(addKeyPromises);
+                document.getElementById('key-code-input').value = '';
+                showMessage('key-management-message', `เพิ่ม ${newKeyCodes.length} คีย์เรียบร้อยแล้ว!`, 'green');
+            } catch (error) {
+                console.error("Error adding keys:", error);
+                showMessage('key-management-message', 'เกิดข้อผิดพลาดในการเพิ่มคีย์!', 'red');
+            }
+        }
+
+        /**
+         * @function deleteKey
+         * @description Deletes a specific game key from Firestore.
+         * @param {string} keyId - The ID of the key to delete.
+         */
+        window.deleteKey = async function(keyId) {
+            if (!isAuthReady) { console.log("Firebase not ready."); return; }
+            if (!confirm("คุณแน่ใจหรือไม่ว่าต้องการลบคีย์นี้?")) {
+                return; // User cancelled
+            }
+            const keyRef = doc(db, `artifacts/${appId}/public/data/keys`, keyId);
+            try {
+                await deleteDoc(keyRef);
+                showMessage('key-management-message', 'ลบคีย์เรียบร้อยแล้ว!', 'green');
+            } catch (error) {
+                console.error("Error deleting key:", error);
+                showMessage('key-management-message', 'เกิดข้อผิดพลาดในการลบคีย์!', 'red');
+            }
+        }
+
+        /**
+         * @function renderSlipVerification
+         * @description Renders the list of pending payment slips in the admin section.
+         */
+        window.renderSlipVerification = function() {
+            const pendingSlipsList = document.getElementById('pending-slips-list');
+            if (!pendingSlipsList) return;
+            pendingSlipsList.innerHTML = '';
+
+            if (pendingPayments.length === 0) {
+                document.getElementById('no-slips-message').classList.remove('hidden');
+                return;
+            } else {
+                document.getElementById('no-slips-message').classList.add('hidden');
+            }
+
+            pendingPayments.forEach(slip => {
+                const slipCard = document.createElement('div');
+                slipCard.className = 'bg-white rounded-lg shadow-md p-4 border border-blue-200';
+                slipCard.innerHTML = `
+                    <p class="text-lg font-semibold text-blue-800">สินค้า: ${slip.productName}</p>
+                    <p class="text-xl font-bold text-green-600">ราคา: ฿${slip.productPrice}</p>
+                    <p class="text-gray-700 text-sm mb-2">ผู้ใช้: ${slip.username} (ID: ${slip.userId})</p>
+                    <img src="${slip.slipImageUrl}" alt="Payment Slip" class="w-full h-48 object-contain rounded-lg shadow-md border border-gray-300 my-4">
+                    <div class="flex justify-end space-x-2 mt-4">
+                        <button class="bg-green-600 text-white py-2 px-4 rounded-full text-sm hover:bg-green-700 transition duration-300" onclick="approvePayment('${slip.id}');">อนุมัติ</button>
+                        <button class="bg-red-600 text-white py-2 px-4 rounded-full text-sm hover:bg-red-700 transition duration-300" onclick="rejectPayment('${slip.id}');">ปฏิเสธ</button>
+                    </div>
+                `;
+                pendingSlipsList.appendChild(slipCard);
+            });
+        }
+
+        /**
+         * @function approvePayment
+         * @description Approves a payment, deletes the slip, assigns a game key, and notifies the user.
+         * @param {string} slipId - The ID of the payment slip to approve.
+         */
+        window.approvePayment = async function(slipId) {
+            if (!isAuthReady) { console.log("Firebase not ready."); return; }
+            const slipRef = doc(db, `artifacts/${appId}/public/data/pendingPayments`, slipId);
+            try {
+                const slipDoc = await getDoc(slipRef);
+                if (!slipDoc.exists()) {
+                    showMessage('payment-message', 'ไม่พบสลิปนี้แล้ว!', 'red');
+                    return;
+                }
+                const approvedSlip = slipDoc.data();
+
+                await deleteDoc(slipRef); // ลบสลิป
+
+                // กำหนดคีย์เกมและส่งไปยังกล่องจดหมายของผู้ใช้
+                const q = query(collection(db, `artifacts/${appId}/public/data/keys`), where("productId", "==", approvedSlip.productId), where("isUsed", "==", false), limit(1));
+                const querySnapshot = await getDocs(q);
+                if (!querySnapshot.empty) {
+                    const keyDoc = querySnapshot.docs[0];
+                    const keyRef = doc(db, `artifacts/${appId}/public/data/keys`, keyDoc.id);
+                    await updateDoc(keyRef, { isUsed: true });
+
+                    // เพิ่มข้อความในกล่องจดหมายของผู้ใช้
+                    await addDoc(collection(db, `artifacts/${appId}/users/${approvedSlip.userId}/inbox`), {
+                        productId: approvedSlip.productId,
+                        productName: approvedSlip.productName,
+                        message: `การชำระเงินสำหรับ ${approvedSlip.productName} ได้รับการอนุมัติแล้ว! รหัสเกมของคุณคือ: ${keyDoc.data().code}`,
+                        type: 'key',
+                        key: keyDoc.data().code,
+                        timestamp: new Date().toISOString(),
+                        userId: approvedSlip.userId // เพิ่ม userId เพื่อให้ง่ายต่อการกรองใน inbox
+                    });
+                    showMessage('payment-message', 'อนุมัติการชำระเงินและส่งรหัสเกมให้ลูกค้าแล้ว!', 'green');
+                } else {
+                    // ไม่มีคีย์พร้อมใช้งาน
+                    await addDoc(collection(db, `artifacts/${appId}/users/${approvedSlip.userId}/inbox`), {
+                        productId: approvedSlip.productId,
+                        productName: approvedSlip.productName,
+                        message: `การชำระเงินสำหรับ ${approvedSlip.productName} ได้รับการอนุมัติแล้ว แต่ไม่มีรหัสเกมพร้อมใช้งาน กรุณาติดต่อผู้ดูแลระบบ`,
+                        type: 'info',
+                        timestamp: new Date().toISOString(),
+                        userId: approvedSlip.userId
+                    });
+                    showMessage('payment-message', 'อนุมัติการชำระเงินแล้ว แต่ไม่มีคีย์พร้อมใช้งาน!', 'red');
+                }
+            } catch (error) {
+                console.error("Error approving payment:", error);
+                showMessage('payment-message', 'เกิดข้อผิดพลาดในการอนุมัติการชำระเงิน!', 'red');
+            }
+        }
+
+        /**
+         * @function rejectPayment
+         * @description Rejects a payment, deletes the slip, and notifies the user.
+         * @param {string} slipId - The ID of the payment slip to reject.
+         */
+        window.rejectPayment = async function(slipId) {
+            if (!isAuthReady) { console.log("Firebase not ready."); return; }
+            const slipRef = doc(db, `artifacts/${appId}/public/data/pendingPayments`, slipId);
+            try {
+                const slipDoc = await getDoc(slipRef);
+                if (!slipDoc.exists()) {
+                    showMessage('payment-message', 'ไม่พบสลิปนี้แล้ว!', 'red');
+                    return;
+                }
+                const rejectedSlip = slipDoc.data();
+
+                await deleteDoc(slipRef); // ลบสลิป
+
+                // แจ้งผู้ใช้เกี่ยวกับการปฏิเสธ
+                await addDoc(collection(db, `artifacts/${appId}/users/${rejectedSlip.userId}/inbox`), {
+                    productId: rejectedSlip.productId,
+                    productName: rejectedSlip.productName,
+                    message: `การชำระเงินสำหรับ ${rejectedSlip.productName} ถูกปฏิเสธ กรุณาตรวจสอบสลิปและลองใหม่อีกครั้ง หรือติดต่อผู้ดูแลระบบ`,
+                    type: 'warning',
+                    timestamp: new Date().toISOString(),
+                    userId: rejectedSlip.userId
+                });
+                showMessage('payment-message', 'ปฏิเสธการชำระเงินและแจ้งลูกค้าแล้ว!', 'red');
+            } catch (error) {
+                console.error("Error rejecting payment:", error);
+                showMessage('payment-message', 'เกิดข้อผิดพลาดในการปฏิเสธการชำระเงิน!', 'red');
+            }
+        }
+
+        /**
+         * @function renderInbox
+         * @description Renders the current user's inbox messages.
+         */
+        window.renderInbox = function() {
+            const inboxContent = document.getElementById('inbox-content');
+            if (!inboxContent) return;
+            inboxContent.innerHTML = '';
+            
+            // กรองข้อความในกล่องจดหมายตาม currentUserId
+            const userInbox = inbox.filter(msg => currentUserId && msg.userId === currentUserId);
+
+            if (userInbox.length === 0) {
+                document.getElementById('no-inbox-message').classList.remove('hidden');
+                return;
+            } else {
+                document.getElementById('no-inbox-message').classList.add('hidden');
+            }
+
+            userInbox.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp)); // เรียงตามเวลาล่าสุด
+
+            userInbox.forEach(msg => {
+                const messageCard = document.createElement('div');
+                let bgColor = 'bg-blue-50';
+                let borderColor = 'border-blue-200';
+                if (msg.type === 'key') {
+                    bgColor = 'bg-green-50';
+                    borderColor = 'border-green-200';
+                } else if (msg.type === 'warning') {
+                    bgColor = 'bg-yellow-50';
+                    borderColor = 'border-yellow-200';
+                }
+
+                messageCard.className = `${bgColor} rounded-lg shadow-sm p-4 border ${borderColor}`;
+                messageCard.innerHTML = `
+                    <p class="text-gray-800">${msg.message}</p>
+                    ${msg.key ? `<p class="font-bold text-lg text-blue-700 mt-2">รหัสเกม: <span class="select-all">${msg.key}</span></p>` : ''}
+                    <p class="text-xs text-gray-500 mt-2">เวลา: ${new Date(msg.timestamp).toLocaleString('th-TH')}</p>
+                `;
+                inboxContent.appendChild(messageCard);
+            });
+        }
+
+        /**
+         * @function handleSlipImageUploadChange
+         * @description Handles the change event for the slip image upload input, displaying a preview.
+         * @param {Event} event - The change event.
+         */
+        document.getElementById('slip-image-upload').addEventListener('change', function(event) {
+            const file = event.target.files[0];
+            const slipPreviewImage = document.getElementById('slip-preview-image');
+            if (file) {
+                const reader = new FileReader();
+                reader.onload = function(e) {
+                    slipPreviewImage.src = e.target.result;
+                    slipPreviewImage.classList.remove('hidden');
+                };
+                reader.readAsDataURL(file);
+            } else {
+                slipPreviewImage.src = '';
+                slipPreviewImage.classList.add('hidden');
+            }
+        });
+
+        /**
+         * @function handleSubmitPayment
+         * @description Handles the submission of a payment slip.
+         * Stores the slip image as a Base64 string in Firestore (for demo purposes).
+         * NOTE: For production, consider using Firebase Storage for image uploads.
+         */
+        async function handleSubmitPayment() {
+            if (!isAuthReady) { console.log("Firebase not ready."); return; }
+
+            const slipImageUpload = document.getElementById('slip-image-upload');
+            const paymentProductName = document.getElementById('payment-product-name').innerText;
+            const paymentProductPrice = document.getElementById('payment-product-price').innerText;
+            const paymentProductId = document.getElementById('payment-product-id').value;
+            const loadingSpinner = document.getElementById('loading-spinner');
+            const paymentMessage = document.getElementById('payment-message');
+
+            if (!currentUser || !currentUserId || currentUser.username === 'Guest') {
+                showMessage('payment-message', 'กรุณาเข้าสู่ระบบก่อนทำการส่งสลิป', 'red');
+                return;
+            }
+
+            if (!slipImageUpload.files || slipImageUpload.files.length === 0) {
+                showMessage('payment-message', 'กรุณาอัปโหลดรูปภาพสลิป', 'red');
+                return;
+            }
+
+            loadingSpinner.classList.remove('hidden');
+            paymentMessage.classList.add('hidden');
+
+            try {
+                const newSlip = {
+                    userId: currentUserId,
+                    username: currentUser.username,
+                    productName: paymentProductName,
+                    productPrice: parseFloat(paymentProductPrice),
+                    productId: paymentProductId,
+                    slipImageUrl: document.getElementById('slip-preview-image').src, // Base64 string
+                    timestamp: new Date().toISOString()
+                };
+                await addDoc(collection(db, `artifacts/${appId}/public/data/pendingPayments`), newSlip);
+                loadingSpinner.classList.add('hidden');
+                showMessage('payment-message', 'ส่งสลิปการชำระเงินเรียบร้อยแล้ว! โปรดรอการตรวจสอบจากผู้ดูแลระบบ', 'green');
+                slipImageUpload.value = ''; // Clear file input
+                document.getElementById('slip-preview-image').classList.add('hidden');
+            } catch (error) {
+                console.error("Error submitting payment slip:", error);
+                loadingSpinner.classList.add('hidden');
+                showMessage('payment-message', 'เกิดข้อผิดพลาดในการส่งสลิป!', 'red');
+            }
+        }
+
+        /**
+         * @function cancelPayment
+         * @description Cancels the payment process and returns to the home page.
+         */
+        window.cancelPayment = function() {
+            showPage('home-section');
+            // ล้างฟอร์มการชำระเงิน
+            document.getElementById('slip-image-upload').value = '';
+            document.getElementById('slip-preview-image').classList.add('hidden');
+            document.getElementById('payment-message').classList.add('hidden');
+        }
+
+        /**
+         * @function updateHomepageHeadline
+         * @description Updates the homepage headline in Firestore from the admin panel.
+         */
+        window.updateHomepageHeadline = async function() {
+            if (!isAuthReady) { console.log("Firebase not ready."); return; }
+            const adminSettingsRef = doc(db, `artifacts/${appId}/public/data/adminSettings/settings`);
+            try {
+                await updateDoc(adminSettingsRef, { homepageHeadline: document.getElementById('homepage-headline-input').value });
+                showMessage('headline-message', 'บันทึกหัวข้อหน้าแรกเรียบร้อยแล้ว!', 'green');
+            } catch (error) {
+                console.error("Error updating homepage headline:", error);
+                showMessage('headline-message', 'เกิดข้อผิดพลาดในการบันทึก!', 'red');
+            }
+        }
+
+        /**
+         * @function updateFeaturedProductsTitle
+         * @description Updates the featured products title in Firestore from the admin panel.
+         */
+        window.updateFeaturedProductsTitle = async function() {
+            if (!isAuthReady) { console.log("Firebase not ready."); return; }
+            const adminSettingsRef = doc(db, `artifacts/${appId}/public/data/adminSettings/settings`);
+            try {
+                await updateDoc(adminSettingsRef, { featuredProductsTitle: document.getElementById('featured-products-title-input').value });
+                showMessage('featured-title-message', 'บันทึกหัวข้อเกมยอดนิยมเรียบร้อยแล้ว!', 'green');
+            } catch (error) {
+                console.error("Error updating featured products title:", error);
+                showMessage('featured-title-message', 'เกิดข้อผิดพลาดในการบันทึก!', 'red');
+            }
+        }
+
+        /**
+         * @function resetRegisterForm
+         * @description Resets the registration form fields.
+         */
+        function resetRegisterForm() {
+            document.getElementById('register-username').value = '';
+            document.getElementById('register-email').value = '';
+            document.getElementById('register-password').value = '';
+            document.getElementById('register-confirm-password').value = '';
+            document.getElementById('register-message').classList.add('hidden');
+        }
+
+        /**
+         * @function handleRegister
+         * @description Handles user registration.
+         * @param {Event} | event - The form submission event.
+         */
+        async function handleRegister(event) {
+            event.preventDefault();
+            if (!isAuthReady) { console.log("Firebase not ready for registration."); return; }
+
+            const username = document.getElementById('register-username').value;
+            const email = document.getElementById('register-email').value;
+            const password = document.getElementById('register-password').value;
+            const confirmPassword = document.getElementById('register-confirm-password').value;
+            const messageEl = document.getElementById('register-message');
+            const loadingSpinner = document.querySelector('#register-form .loading-spinner');
+
+            messageEl.classList.add('hidden'); // ซ่อนข้อความเก่า
+            if (loadingSpinner) loadingSpinner.classList.remove('hidden'); // แสดง spinner
+
+            if (!username || !email || !password || !confirmPassword) {
+                if (loadingSpinner) loadingSpinner.classList.add('hidden'); // ซ่อน spinner
+                showMessage('register-message', 'กรุณากรอกข้อมูลให้ครบถ้วน', 'red');
+                return;
+            }
+
+            if (password !== confirmPassword) {
+                if (loadingSpinner) loadingSpinner.classList.add('hidden'); // ซ่อน spinner
+                showMessage('register-message', 'รหัสผ่านไม่ตรงกัน', 'red');
+                return;
+            }
+
+            try {
+                // ตรวจสอบว่าชื่อผู้ใช้หรืออีเมลมีอยู่แล้วใน Firestore หรือไม่
+                const qExisting = query(collection(db, `artifacts/${appId}/public/data/users`), 
+                                        or(where("username", "==", username), where("email", "==", email)));
+                const existingUserSnapshot = await getDocs(qExisting);
+
+                if (!existingUserSnapshot.empty) {
+                    if (loadingSpinner) loadingSpinner.classList.add('hidden'); // ซ่อน spinner
+                    showMessage('register-message', 'ชื่อผู้ใช้หรืออีเมลนี้ถูกใช้ไปแล้ว', 'red');
+                    return;
+                }
+
+                // เพิ่มผู้ใช้ใหม่ลงใน Firestore
+                const newUserRef = await addDoc(collection(db, `artifacts/${appId}/public/data/users`), {
+                    username: username,
+                    email: email,
+                    password: password, // IMPORTANT: ในแอปพลิเคชันจริง ควรแฮชรหัสผ่านก่อนจัดเก็บ!
+                    isAdmin: false // ผู้ใช้ใหม่ไม่ใช่แอดมินโดยค่าเริ่มต้น
+                });
+
+                // ตั้งค่า currentUser เป็นผู้ใช้ที่เพิ่งลงทะเบียน (ตัวเลือกเสริม แต่ดีสำหรับการเข้าสู่ระบบทันที)
+                currentUser = { id: newUserRef.id, username: username, email: email, isAdmin: false };
+                currentUserId = newUserRef.id;
+
+                if (loadingSpinner) loadingSpinner.classList.add('hidden'); // ซ่อน spinner
+                showMessage('register-message', 'สมัครสมาชิกสำเร็จ! กำลังเปลี่ยนหน้า...', 'green');
+                
+                resetRegisterForm(); // ล้างฟอร์ม
+
+                // รอ 2 วินาทีแล้วเปลี่ยนไปหน้าเข้าสู่ระบบ
+                setTimeout(() => {
+                    showPage('login-section');
+                }, 2000);
+            } catch (error) {
+                console.error("Error registering user:", error);
+                if (loadingSpinner) loadingSpinner.classList.add('hidden'); // ซ่อน spinner
+                showMessage('register-message', 'เกิดข้อผิดพลาดในการสมัครสมาชิก!', 'red');
+            }
+        }
+
+        /**
+         * @function renderUserManagement
+         * @description Renders the list of users in the admin user management table.
+         */
+        window.renderUserManagement = function() {
+            const userListBody = document.getElementById('user-list-body');
+            if (!userListBody) return;
+
+            userListBody.innerHTML = '';
+            if (users.length === 0) {
+                userListBody.innerHTML = '<tr><td colspan="4" class="text-center text-gray-500">ไม่มีผู้ใช้งานในระบบ</td></tr>';
+            }
+            users.forEach(user => {
+                const row = userListBody.insertRow();
+                row.innerHTML = `
+                    <td>${user.username}</td>
+                    <td>${user.email}</td>
+                    <td>${user.id}</td>
+                    <td>
+                        <input type="checkbox" ${user.isAdmin ? 'checked' : ''} 
+                               onclick="toggleAdminStatus('${user.id}', this.checked);"
+                               class="form-checkbox h-5 w-5 text-blue-600 rounded focus:ring-blue-500">
+                    </td>
+                `;
+            });
+        }
+
+        /**
+         * @function toggleAdminStatus
+         * @description Toggles the admin status of a user in Firestore.
+         * Prevents an admin from revoking their own admin privileges.
+         * @param {string} userId - The ID of the user to modify.
+         * @param {boolean} isAdminStatus - The new admin status (true/false).
+         */
+        window.toggleAdminStatus = async function(userId, isAdminStatus) {
+            if (!isAuthReady) { console.log("Firebase not ready."); return; }
+            // ตรวจสอบว่าผู้ใช้ปัจจุบันเป็นแอดมินและมีสิทธิ์แก้ไขหรือไม่
+            if (!currentUser || !currentUser.isAdmin) {
+                showMessage('user-management-message', 'คุณไม่มีสิทธิ์ในการดำเนินการนี้', 'red');
+                return;
+            }
+            // ป้องกันไม่ให้แอดมินลบสิทธิ์แอดมินของตัวเอง
+            if (userId === currentUserId && !isAdminStatus) {
+                showMessage('user-management-message', 'ไม่สามารถลบสิทธิ์แอดมินของตัวเองได้', 'red');
+                // คืนค่า checkbox กลับไปเป็น checked
+                document.querySelector(`#user-list-body input[onclick*="${userId}"]`).checked = true;
+                return;
+            }
+
+            const userRef = doc(db, `artifacts/${appId}/public/data/users`, userId);
+            try {
+                await updateDoc(userRef, { isAdmin: isAdminStatus });
+                showMessage('user-management-message', `อัปเดตสถานะแอดมินสำหรับ ${users.find(u => u.id === userId)?.username || userId} เป็น ${isAdminStatus ? 'true' : 'false'} เรียบร้อยแล้ว!`, 'green');
+            } catch (error) {
+                console.error("Error toggling admin status:", error);
+                showMessage('user-management-message', 'เกิดข้อผิดพลาดในการอัปเดตสถานะแอดมิน!', 'red');
+            }
+        }
+
+    </script>
+
+    <style>
+        /* Custom styles for the blue and white theme */
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #f0f9ff; /* Lightest blue background */
+            color: #1a202c; /* Dark text for contrast */
+        }
+        /* Hide sections by default, JavaScript will show the active one */
+        .page-section {
+            display: none;
+        }
+        .page-section.active {
+            display: block;
+        }
+        /* Table styling for admin panels */
+        .admin-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 1rem;
+        }
+        .admin-table th, .admin-table td {
+            border: 1px solid #cbd5e0; /* gray-300 */
+            padding: 0.75rem;
+            text-align: left;
+        }
+        .admin-table th {
+            background-color: #e2e8f0; /* gray-200 */
+            font-weight: 600;
+            color: #2d3748; /* gray-800 */
+        }
+        .admin-table tr:nth-child(even) {
+            background-color: #f8fafc; /* gray-50 */
+        }
+        .admin-table tr:hover {
+            background-color: #eff6ff; /* blue-50 */
+        }
+        /* Loading spinner for AI processing */
+        .loading-spinner {
+            border: 4px solid #f3f3f3; /* Light grey */
+            border-top: 4px solid #3498db; /* Blue */
+            border-radius: 50%;
+            width: 20px;
+            height: 20px;
+            animation: spin 1s linear infinite;
+            display: inline-block;
+            vertical-align: middle;
+            margin-left: 8px;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        .product-card {
+            display: flex;
+            flex-direction: column;
+        }
+        .product-card img {
+            height: 200px;
+            object-fit: cover;
+        }
+    </style>
+</head>
+<body class="antialiased">
+    <!-- Header Section -->
+    <header class="bg-blue-700 text-white shadow-lg py-4 px-6 md:px-12 flex justify-between items-center rounded-b-xl">
+        <div class="flex items-center">
+            <!-- Shop Logo -->
+            <a href="#" onclick="showPage('home-section'); return false;">
+                <img id="shop-logo" src="https://placehold.co/50x50/ffffff/000000?text=LOGO" alt="zobashop Logo" class="h-12 w-12 rounded-full mr-3 shadow-md">
+            </a>
+            <!-- Site Title -->
+            <a href="#" class="text-3xl font-bold text-white hover:text-blue-200 transition duration-300 ease-in-out" onclick="showPage('home-section'); return false;">
+                zobashop
+            </a>
+        </div>
+        <!-- Navigation Menu -->
+        <nav class="hidden md:flex space-x-8 items-center">
+            <a href="#" class="text-white hover:text-blue-200 transition duration-300 ease-in-out font-medium" onclick="showPage('home-section'); return false;">หน้าหลัก</a>
+            <a href="#" class="text-white hover:text-blue-200 transition duration-300 ease-in-out font-medium" onclick="showPage('products-section'); renderProductCards(); return false;">สินค้า</a>
+            <a href="#" class="text-white hover:text-blue-200 transition duration-300 ease-in-out font-medium" onclick="showPage('promotions-section'); return false;">โปรโมชั่น</a>
+            <a href="#" class="text-white hover:text-blue-200 transition duration-300 ease-in-out font-medium" onclick="showPage('contact-section'); renderContactSection(); return false;">ติดต่อเรา</a>
+            
+            <!-- Conditional Login/Logout/Register Links -->
+            <div id="auth-links" class="flex space-x-8">
+                <a href="#" class="text-white hover:text-blue-200 transition duration-300 ease-in-out font-medium" onclick="showPage('login-section'); return false;">เข้าสู่ระบบ</a>
+                <a href="#" class="bg-blue-500 text-white py-2 px-4 rounded-full hover:bg-blue-600 transition duration-300 ease-in-out font-medium" onclick="showPage('register-section'); return false;">สมัครสมาชิก</a>
+            </div>
+            <div id="user-info" class="hidden flex space-x-8 items-center">
+                <a href="#" class="text-white hover:text-blue-200 transition duration-300 ease-in-out font-medium" onclick="showPage('inbox-section'); renderInbox(); return false;">กล่องจดหมาย</a>
+                <span class="text-white font-medium">สวัสดี, <span id="username-display"></span>!</span>
+                <button class="bg-red-500 text-white py-2 px-4 rounded-full hover:bg-red-600 transition duration-300 ease-in-out font-medium" onclick="logout()">ออกจากระบบ</button>
+            </div>
+        </nav>
+        <!-- Mobile Menu Button (Hamburger Icon) -->
+        <div class="md:hidden">
+            <button id="mobile-menu-button" class="text-white focus:outline-none focus:text-blue-200">
+                <svg class="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16m-7 6h7"></path>
+                </svg>
+            </button>
+        </div>
+    </header>
+
+    <!-- Mobile Navigation Menu (Hidden by default) -->
+    <div id="mobile-menu" class="hidden md:hidden bg-blue-800 text-white py-4 px-6 rounded-b-xl mx-4">
+        <nav class="flex flex-col space-y-4">
+            <a href="#" class="block text-white hover:text-blue-200 transition duration-300 ease-in-out font-medium" onclick="showPage('home-section'); toggleMobileMenu(); return false;">หน้าหลัก</a>
+            <a href="#" class="block text-white hover:text-blue-200 transition duration-300 ease-in-out font-medium" onclick="showPage('products-section'); renderProductCards(); toggleMobileMenu(); return false;">สินค้า</a>
+            <a href="#" class="block text-white hover:text-blue-200 transition duration-300 ease-in-out font-medium" onclick="showPage('promotions-section'); toggleMobileMenu(); return false;">โปรโมชั่น</a>
+            <a href="#" class="block text-white hover:text-blue-200 transition duration-300 ease-in-out font-medium" onclick="showPage('contact-section'); renderContactSection(); toggleMobileMenu(); return false;">ติดต่อเรา</a>
+            <div id="mobile-auth-links">
+                <a href="#" class="block text-white hover:text-blue-200 transition duration-300 ease-in-out font-medium" onclick="showPage('login-section'); toggleMobileMenu(); return false;">เข้าสู่ระบบ</a>
+                <a href="#" class="block bg-blue-500 text-white py-2 px-4 rounded-full text-center hover:bg-blue-600 transition duration-300 ease-in-out font-medium" onclick="showPage('register-section'); toggleMobileMenu(); return false;">สมัครสมาชิก</a>
+            </div>
+            <div id="mobile-user-info" class="hidden flex flex-col space-y-4">
+                <a href="#" class="block text-white hover:text-blue-200 transition duration-300 ease-in-out font-medium" onclick="showPage('inbox-section'); renderInbox(); toggleMobileMenu(); return false;">กล่องจดหมาย</a>
+                <span class="block text-white font-medium mb-2">สวัสดี, <span id="mobile-username-display"></span>!</span>
+                <button class="bg-red-500 text-white py-2 px-4 rounded-full w-full hover:bg-red-600 transition duration-300 ease-in-out font-medium" onclick="logout(); toggleMobileMenu();">ออกจากระบบ</button>
+            </div>
+        </nav>
+    </div>
+
+    <!-- Main Content Area - All sections are here and toggled by JS -->
+    <main class="container mx-auto p-4">
+        <!-- Home Section -->
+        <section id="home-section" class="page-section active bg-white shadow-xl rounded-xl p-8 md:p-12 mt-4">
+            <div class="relative bg-gradient-to-r from-blue-600 to-blue-800 text-white py-20 px-6 md:py-32 md:px-12 text-center rounded-xl">
+                <div class="max-w-4xl mx-auto">
+                    <h1 id="hero-main-title" class="text-4xl md:text-6xl font-extrabold leading-tight mb-6">
+                        ปลดล็อกโลกแห่งเกม <span class="text-yellow-300">ที่ zobashop</span>
+                    </h1>
+                    <p class="text-lg md:text-xl mb-8 opacity-90">
+                        รหัสเกมแท้ ราคาโดนใจ พร้อมส่งทันที! ค้นพบเกมโปรดของคุณได้ที่นี่
+                    </p>
+                    <a href="#" class="bg-yellow-400 text-blue-900 font-bold py-3 px-8 rounded-full text-lg hover:bg-yellow-300 transition duration-300 ease-in-out transform hover:scale-105 shadow-lg" onclick="showPage('products-section'); renderProductCards(); return false;">
+                        ดูสินค้าทั้งหมด
+                    </a>
+                </div>
+            </div>
+
+            <!-- Added ID to the heading for dynamic update -->
+            <h2 id="featured-products-title" class="text-4xl font-bold text-center mb-12 text-blue-800 mt-16">
+                เกมยอดนิยมประจำสัปดาห์
+            </h2>
+            <div id="featured-product-cards" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-8">
+                <!-- Product cards will be dynamically loaded here by JavaScript -->
+            </div>
+
+            <!-- Call to Action Section -->
+            <div class="py-16 px-6 md:px-12 bg-blue-600 text-white text-center rounded-xl mt-16">
+                <h2 class="text-3xl md:text-4xl font-bold mb-4">
+                    ไม่เจอเกมที่ต้องการ?
+                </h2>
+                <p class="text-lg md:text-xl mb-8 opacity-90">
+                    เรามีเกมอีกมากมายรอคุณอยู่! ค้นหาเกมโปรดของคุณได้เลย
+                </p>
+                <a href="#" class="bg-white text-blue-700 font-bold py-3 px-8 rounded-full text-lg hover:bg-gray-200 transition duration-300 ease-in-out transform hover:scale-105 shadow-lg" onclick="showPage('products-section'); renderProductCards(); return false;">
+                    ค้นหาเกม
+                </a>
+            </div>
+        </section>
+
+        <!-- Products Section -->
+        <section id="products-section" class="page-section bg-white shadow-xl rounded-xl p-8 md:p-12 mt-4">
+            <h2 class="text-4xl font-bold text-center mb-12 text-blue-800">สินค้าทั้งหมด</h2>
+            <div id="all-product-cards" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-8 mt-8">
+                <!-- All product cards will be dynamically loaded here by JavaScript -->
+            </div>
+        </section>
+
+        <!-- Promotions Section (Placeholder) -->
+        <section id="promotions-section" class="page-section bg-white shadow-xl rounded-xl p-8 md:p-12 mt-4">
+            <h2 class="text-4xl font-bold text-center mb-12 text-blue-800">โปรโมชั่นพิเศษ</h2>
+            <p class="text-center text-gray-700 text-lg">
+                ติดตามโปรโมชั่นสุดคุ้มได้ที่นี่!
+            </p>
+            <div class="bg-blue-100 border border-blue-300 text-blue-800 px-4 py-3 rounded-lg relative mt-8">
+                <strong class="font-bold">ลด 15%!</strong>
+                <span class="block sm:inline"> สำหรับเกมที่ร่วมรายการตลอดเดือนนี้!</span>
+            </div>
+        </section>
+
+        <!-- Contact Section -->
+        <section id="contact-section" class="page-section bg-white shadow-xl rounded-xl p-8 md:p-12 mt-4">
+            <h2 class="text-4xl font-bold text-center mb-12 text-blue-800">ข้อมูลติดต่อและชำระเงิน</h2>
+            <div class="max-w-md mx-auto bg-blue-50 p-6 rounded-lg shadow-md border border-blue-200 text-center">
+                <p class="text-center text-gray-700 text-lg mb-8">
+                    หากมีข้อสงสัยหรือต้องการความช่วยเหลือ โปรดติดต่อเรา หรือชำระเงินตามข้อมูลด้านล่าง:
+                </p>
+                <div id="contact-details">
+                    <!-- Bank details and Line contact will be rendered here by JS -->
+                </div>
+            </div>
+        </section>
+
+        <!-- Login Section -->
+        <section id="login-section" class="page-section bg-white shadow-xl rounded-xl p-8 md:p-12 mt-4">
+            <h2 class="text-4xl font-bold text-center mb-12 text-blue-800">เข้าสู่ระบบ</h2>
+            <div class="max-w-md mx-auto bg-blue-50 p-6 rounded-lg shadow-md border border-blue-200">
+                <form id="login-form">
+                    <div class="mb-4">
+                        <label for="login-username" class="block text-gray-700 text-sm font-bold mb-2">ชื่อผู้ใช้ / อีเมล:</label>
+                        <input type="text" id="login-username" name="username" class="shadow appearance-none border rounded w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:shadow-outline focus:border-blue-500" placeholder="ชื่อผู้ใช้หรืออีเมลของคุณ">
+                    </div>
+                    <div class="mb-6">
+                        <label for="login-password" class="block text-gray-700 text-sm font-bold mb-2">รหัสผ่าน:</label>
+                        <input type="password" id="login-password" name="password" class="shadow appearance-none border rounded w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:shadow-outline focus:border-blue-500" placeholder="รหัสผ่านของคุณ">
+                    </div>
+                    <div id="login-message" class="text-red-500 text-sm mb-4 hidden"></div>
+                    <div class="flex items-center justify-between">
+                        <button type="submit" class="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-full focus:outline-none focus:shadow-outline transition duration-300 ease-in-out">
+                            เข้าสู่ระบบ <span class="loading-spinner hidden"></span>
+                        </button>
+                        <a href="#" class="inline-block align-baseline font-bold text-sm text-blue-600 hover:text-blue-800" onclick="showPage('register-section'); return false;">
+                            ยังไม่มีบัญชี? สมัครสมาชิก
+                        </a>
+                    </div>
+                </form>
+            </div>
+        </section>
+
+        <!-- Register Section -->
+        <section id="register-section" class="page-section bg-white shadow-xl rounded-xl p-8 md:p-12 mt-4">
+            <h2 class="text-4xl font-bold text-center mb-12 text-blue-800">สมัครสมาชิก</h2>
+            <div class="max-w-md mx-auto bg-blue-50 p-6 rounded-lg shadow-md border border-blue-200">
+                <form id="register-form">
+                    <div class="mb-4">
+                        <label for="register-username" class="block text-gray-700 text-sm font-bold mb-2">ชื่อผู้ใช้:</label>
+                        <input type="text" id="register-username" name="username" class="shadow appearance-none border rounded w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:shadow-outline focus:border-blue-500" placeholder="เลือกชื่อผู้ใช้">
+                    </div>
+                    <div class="mb-4">
+                        <label for="register-email" class="block text-gray-700 text-sm font-bold mb-2">อีเมล:</label>
+                        <input type="email" id="register-email" name="email" class="shadow appearance-none border rounded w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:shadow-outline focus:border-blue-500" placeholder="อีเมลของคุณ">
+                    </div>
+                    <div class="mb-4">
+                        <label for="register-password" class="block text-gray-700 text-sm font-bold mb-2">รหัสผ่าน:</label>
+                        <input type="password" id="register-password" name="password" class="shadow appearance-none border rounded w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:shadow-outline focus:border-blue-500" placeholder="สร้างรหัสผ่าน">
+                    </div>
+                    <div class="mb-6">
+                        <label for="register-confirm-password" class="block text-gray-700 text-sm font-bold mb-2">ยืนยันรหัสผ่าน:</label>
+                        <input type="password" id="register-confirm-password" name="confirm-password" class="shadow appearance-none border rounded w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:shadow-outline focus:border-blue-500" placeholder="ยืนยันรหัสผ่านอีกครั้ง">
+                    </div>
+                    <div id="register-message" class="text-red-500 text-sm mb-4 hidden"></div>
+                    <div class="flex items-center justify-between">
+                        <button type="submit" class="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-full focus:outline-none focus:shadow-outline transition duration-300 ease-in-out">
+                            สมัครสมาชิก <span class="loading-spinner hidden"></span>
+                        </button>
+                        <a href="#" class="inline-block align-baseline font-bold text-sm text-blue-600 hover:text-blue-800" onclick="showPage('login-section'); return false;">
+                            มีบัญชีอยู่แล้ว? เข้าสู่ระบบ
+                        </a>
+                    </div>
+                </form>
+            </div>
+        </section>
+
+        <!-- Payment Section (Bank Account Details) -->
+        <section id="payment-section" class="page-section bg-white shadow-xl rounded-xl p-8 md:p-12 mt-4 text-center">
+            <h2 class="text-4xl font-bold mb-8 text-blue-800">ชำระเงินด้วยบัญชีธนาคาร</h2>
+            <div class="max-w-md mx-auto bg-blue-50 p-6 rounded-lg shadow-md border border-blue-200">
+                <p class="text-xl text-gray-800 mb-4">สินค้า: <span id="payment-product-name" class="font-semibold text-blue-700"></span></p>
+                <p class="text-2xl font-bold text-green-600 mb-8">ราคา: ฿<span id="payment-product-price"></span></p>
+                <input type="hidden" id="payment-product-id"> <!-- Hidden field to store product ID -->
+                
+                <p class="text-gray-700 mb-4 font-semibold text-xl">ข้อมูลบัญชีธนาคาร:</p>
+                <div class="text-left mb-8 p-4 bg-white rounded-lg shadow-sm border border-gray-200">
+                    <p class="text-lg text-gray-800 mb-1">ธนาคาร: <span id="payment-bank-name" class="font-bold text-blue-700"></span></p>
+                    <p class="text-lg text-gray-800 mb-1">เลขที่บัญชี: <span id="payment-account-number" class="font-bold text-blue-700"></span></p>
+                    <p class="text-lg text-gray-800">ชื่อบัญชี: <span id="payment-account-holder-name" class="font-bold text-blue-700"></span></p>
+                </div>
+                
+                <p class="text-gray-700 text-sm mb-6">
+                    หลังจากชำระเงินแล้ว กรุณาอัปโหลดรูปภาพสลิปด้านล่าง
+                </p>
+
+                <div class="mb-6 text-left">
+                    <label for="slip-image-upload" class="block text-gray-700 text-sm font-bold mb-2">อัปโหลดรูปภาพสลิป:</label>
+                    <input type="file" id="slip-image-upload" accept="image/*" class="shadow appearance-none border rounded w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:shadow-outline focus:border-blue-500">
+                    <img id="slip-preview-image" src="" alt="Slip Preview" class="w-full h-48 object-contain rounded-lg shadow-md border border-blue-300 mt-4 hidden">
+                    <p class="text-xs text-gray-500 mt-1">อัปโหลดรูปภาพสลิปการโอนเงินของคุณที่นี่</p>
+                </div>
+
+                <div class="flex flex-col sm:flex-row justify-center space-y-4 sm:space-y-0 sm:space-x-4">
+                    <button id="submit-payment-button" class="bg-green-600 text-white py-3 px-8 rounded-full text-lg hover:bg-green-700 transition duration-300 ease-in-out transform hover:scale-105 shadow-lg">
+                        ส่งสลิป <span id="loading-spinner" class="hidden loading-spinner"></span>
+                    </button>
+                    <button class="bg-gray-400 text-white py-3 px-8 rounded-full text-lg hover:bg-gray-500 transition duration-300 ease-in-out transform hover:scale-105 shadow-lg" onclick="cancelPayment();">
+                        ยกเลิก
+                    </button>
+                </div>
+                <div id="payment-message" class="text-center mt-4 text-green-600 font-medium hidden"></div>
+            </div>
+        </section>
+
+        <!-- Admin Dashboard Section -->
+        <section id="admin-dashboard-section" class="page-section bg-white shadow-xl rounded-xl p-8 md:p-12 mt-4">
+            <h2 class="text-4xl font-bold text-center mb-12 text-blue-800">แผงควบคุมผู้ดูแลระบบ</h2>
+            <div class="max-w-2xl mx-auto bg-blue-50 p-6 rounded-lg shadow-md border border-blue-200">
+                <p class="text-xl text-gray-800 mb-6">ยินดีต้อนรับ, <span class="font-semibold text-blue-700">ผู้ดูแลระบบ zobashop</span>!</p>
+                
+                <!-- Enhanced Summary Section -->
+                <div class="mb-8 p-6 bg-blue-100 rounded-lg shadow-md grid grid-cols-1 md:grid-cols-3 gap-4 text-center">
+                    <div class="p-4 bg-white rounded-lg shadow-sm border border-blue-200">
+                        <p class="text-xl font-bold text-blue-700">ผู้ใช้งาน</p>
+                        <p id="admin-user-count" class="text-4xl font-extrabold text-blue-900 mt-2">0</p>
+                    </div>
+                    <div class="p-4 bg-white rounded-lg shadow-sm border border-blue-200">
+                        <p class="text-xl font-bold text-blue-700">สินค้า</p>
+                        <p id="admin-product-count" class="text-4xl font-extrabold text-blue-900 mt-2">0</p>
+                    </div>
+                    <div class="p-4 bg-white rounded-lg shadow-sm border border-blue-200">
+                        <p class="text-xl font-bold text-blue-700">สลิปรอตรวจสอบ</p>
+                        <p id="admin-pending-slips-count" class="text-4xl font-extrabold text-blue-900 mt-2">0</p>
+                    </div>
+                </div>
+
+                <div class="mb-8">
+                    <h3 class="text-2xl font-bold text-blue-700 mb-4">จัดการหัวข้อหน้าแรก</h3>
+                    <label for="homepage-headline-input" class="block text-gray-700 text-sm font-bold mb-2">หัวข้อหลัก Hero Section:</label>
+                    <input type="text" id="homepage-headline-input" class="shadow appearance-none border rounded w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:shadow-outline focus:border-blue-500" placeholder="ป้อนหัวข้อใหม่">
+                    <button class="bg-blue-600 text-white py-2 px-4 rounded-full hover:bg-blue-700 transition duration-300 ease-in-out mt-4" onclick="updateHomepageHeadline();">
+                        บันทึกหัวข้อ
+                    </button>
+                    <div id="headline-message" class="text-green-600 text-sm mt-2 hidden"></div>
+                </div>
+
+                <div class="mb-8">
+                    <h3 class="text-2xl font-bold text-blue-700 mb-4">จัดการหัวข้อเกมยอดนิยม</h3>
+                    <label for="featured-products-title-input" class="block text-gray-700 text-sm font-bold mb-2">หัวข้อเกมยอดนิยม:</label>
+                    <input type="text" id="featured-products-title-input" class="shadow appearance-none border rounded w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:shadow-outline focus:border-blue-500" placeholder="ป้อนหัวข้อเกมยอดนิยมใหม่">
+                    <button class="bg-blue-600 text-white py-2 px-4 rounded-full hover:bg-blue-700 transition duration-300 ease-in-out mt-4" onclick="updateFeaturedProductsTitle();">
+                        บันทึกหัวข้อ
+                    </button>
+                    <div id="featured-title-message" class="text-green-600 text-sm mt-2 hidden"></div>
+                </div>
+
+                <div class="mb-8">
+                    <h3 class="text-2xl font-bold text-blue-700 mb-4">การจัดการสินค้า</h3>
+                    <p class="text-gray-700">เพิ่ม, แก้ไข, ลบสินค้า และจัดการสต็อกเกม</p>
+                    <button class="bg-blue-600 text-white py-2 px-4 rounded-full hover:bg-blue-700 transition duration-300 ease-in-out mt-4" onclick="showPage('product-management-section'); renderProductManagement();">
+                        จัดการสินค้า
+                    </button>
+                </div>
+
+                <div class="mb-8">
+                    <h3 class="text-2xl font-bold text-blue-700 mb-4">การจัดการคีย์</h3>
+                    <p class="text-gray-700">อัปโหลดรหัสเกม, ตรวจสอบสถานะคีย์</p>
+                    <button class="bg-blue-600 text-white py-2 px-4 rounded-full hover:bg-blue-700 transition duration-300 ease-in-out mt-4" onclick="showPage('key-management-section'); renderKeyManagement();">
+                        จัดการคีย์
+                    </button>
+                </div>
+
+                <!-- Manage Bank Account Details Settings -->
+                <div class="mb-8">
+                    <h3 class="text-2xl font-bold text-blue-700 mb-4">จัดการข้อมูลบัญชีธนาคาร</h3>
+                    <label for="bank-name-input" class="block text-gray-700 text-sm font-bold mb-2">ชื่อธนาคาร:</label>
+                    <input type="text" id="bank-name-input" class="shadow appearance-none border rounded w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:shadow-outline focus:border-blue-500" placeholder="เช่น ธนาคารกสิกรไทย">
+                    
+                    <label for="account-number-input" class="block text-gray-700 text-sm font-bold mt-4 mb-2">เลขที่บัญชี:</label>
+                    <input type="text" id="account-number-input" class="shadow appearance-none border rounded w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:shadow-outline focus:border-blue-500" placeholder="เช่น 1578077827">
+
+                    <label for="account-holder-name-input" class="block text-gray-700 text-sm font-bold mt-4 mb-2">ชื่อบัญชี:</label>
+                    <input type="text" id="account-holder-name-input" class="shadow appearance-none border rounded w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:shadow-outline focus:border-blue-500" placeholder="เช่น กันตภณ ไชป้อ">
+
+                    <button class="bg-blue-600 text-white py-2 px-4 rounded-full hover:bg-blue-700 transition duration-300 ease-in-out mt-4" onclick="updateBankDetailsSettings();">
+                        บันทึกการตั้งค่าบัญชีธนาคาร
+                    </button>
+                    <div id="bank-qr-message" class="text-green-600 text-sm mt-2 hidden"></div>
+                </div>
+
+                <!-- Manage Line Contact Settings -->
+                <div class="mb-8">
+                    <h3 class="text-2xl font-bold text-blue-700 mb-4">จัดการข้อมูลติดต่อ Line</h3>
+                    <label for="line-id-input" class="block text-gray-700 text-sm font-bold mb-2">Line ID:</label>
+                    <input type="text" id="line-id-input" class="shadow appearance-none border rounded w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:shadow-outline focus:border-blue-500" placeholder="เช่น @zobashop">
+                    
+                    <label for="line-qr-url-input" class="block text-gray-700 text-sm font-bold mt-4 mb-2">URL รูปภาพ Line QR Code (สำหรับติดต่อ):</label>
+                    <input type="text" id="line-qr-url-input" class="shadow appearance-none border rounded w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:shadow-outline focus:border-blue-500" placeholder="https://placehold.co/200x200/00b900/ffffff?text=Line+QR">
+
+                    <button class="bg-blue-600 text-white py-2 px-4 rounded-full hover:bg-blue-700 transition duration-300 ease-in-out mt-4" onclick="updateLineContactSettings();">
+                        บันทึกข้อมูล Line
+                    </button>
+                    <div id="line-contact-message" class="text-green-600 text-sm mt-2 hidden"></div>
+                </div>
+
+                <!-- Manage Shop Logo -->
+                <div class="mb-8">
+                    <h3 class="text-2xl font-bold text-blue-700 mb-4">จัดการโลโก้ร้าน</h3>
+                    <label for="shop-logo-url-input" class="block text-gray-700 text-sm font-bold mb-2">URL รูปภาพโลโก้:</label>
+                    <input type="text" id="shop-logo-url-input" class="shadow appearance-none border rounded w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:shadow-outline focus:border-blue-500" placeholder="https://placehold.co/50x50/ffffff/000000?text=LOGO">
+                    <button class="bg-blue-600 text-white py-2 px-4 rounded-full hover:bg-blue-700 transition duration-300 ease-in-out mt-4" onclick="updateShopLogo();">
+                        บันทึกโลโก้
+                    </button>
+                    <div id="logo-message" class="text-green-600 text-sm mt-2 hidden"></div>
+                </div>
+
+                <!-- Check Payment Slips -->
+                <div class="mb-8">
+                    <h3 class="text-2xl font-bold text-blue-700 mb-4">ตรวจสอบสลิปการชำระเงิน</h3>
+                    <p class="text-gray-700">ตรวจสอบสลิปที่ลูกค้าส่งมาเพื่อยืนยันการซื้อ</p>
+                    <button class="bg-blue-600 text-white py-2 px-4 rounded-full hover:bg-blue-700 transition duration-300 ease-in-out mt-4" onclick="showPage('slip-verification-section'); renderSlipVerification();">
+                        ตรวจสอบสลิป (<span id="pending-slips-badge" class="font-bold">0</span>)
+                    </button>
+                </div>
+
+                <!-- User Management Section -->
+                <div class="mb-8">
+                    <h3 class="text-2xl font-bold text-blue-700 mb-4">จัดการผู้ใช้งาน</h3>
+                    <p class="text-gray-700">จัดการสถานะแอดมินของผู้ใช้งาน</p>
+                    <button class="bg-blue-600 text-white py-2 px-4 rounded-full hover:bg-blue-700 transition duration-300 ease-in-out mt-4" onclick="showPage('user-management-section'); renderUserManagement();">
+                        จัดการผู้ใช้งาน
+                    </button>
+                </div>
+
+                <div class="text-center mt-8">
+                    <button class="bg-red-600 text-white py-3 px-8 rounded-full text-lg hover:bg-red-700 transition duration-300 ease-in-out transform hover:scale-105 shadow-lg" onclick="logout();">
+                        ออกจากระบบผู้ดูแลระบบ
+                    </button>
+                </div>
+            </div>
+        </section>
+
+        <!-- Product Management Section -->
+        <section id="product-management-section" class="page-section bg-white shadow-xl rounded-xl p-8 md:p-12 mt-4">
+            <h2 class="text-4xl font-bold text-center mb-8 text-blue-800">จัดการสินค้า</h2>
+            <button class="bg-blue-600 text-white py-2 px-4 rounded-full hover:bg-blue-700 transition duration-300 ease-in-out mb-6" onclick="showPage('admin-dashboard-section'); updateAdminDashboardSummary();">
+                &larr; กลับไปที่แผงควบคุม
+            </button>
+
+            <div class="max-w-4xl mx-auto bg-blue-50 p-6 rounded-lg shadow-md border border-blue-200">
+                <h3 class="text-2xl font-bold text-blue-700 mb-4">เพิ่ม/แก้ไขสินค้า</h3>
+                <form id="product-form">
+                    <input type="hidden" id="product-id">
+                    <div class="mb-4">
+                        <label for="product-name" class="block text-gray-700 text-sm font-bold mb-2">ชื่อสินค้า:</label>
+                        <input type="text" id="product-name" class="shadow appearance-none border rounded w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:shadow-outline focus:border-blue-500" placeholder="ชื่อเกม">
+                    </div>
+                    <div class="mb-4">
+                        <label for="product-price" class="block text-gray-700 text-sm font-bold mb-2">ราคา (บาท):</label>
+                        <input type="number" id="product-price" class="shadow appearance-none border rounded w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:shadow-outline focus:border-blue-500" placeholder="ราคา">
+                    </div>
+                    <div class="mb-4">
+                        <label for="product-image-url" class="block text-gray-700 text-sm font-bold mb-2">URL รูปภาพสินค้า:</label>
+                        <input type="text" id="product-image-url" class="shadow appearance-none border rounded w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:shadow-outline focus:border-blue-500" placeholder="https://placehold.co/600x400">
+                    </div>
+                    <div class="mb-6">
+                        <label for="product-description" class="block text-gray-700 text-sm font-bold mb-2">รายละเอียด:</label>
+                        <textarea id="product-description" class="shadow appearance-none border rounded w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:shadow-outline focus:border-blue-500" rows="4" placeholder="รายละเอียดสินค้า"></textarea>
+                    </div>
+                    <div class="flex justify-between items-center mt-4">
+                        <button type="submit" class="bg-blue-600 text-white py-2 px-4 rounded-full hover:bg-blue-700 transition duration-300 ease-in-out">
+                            บันทึกสินค้า
+                        </button>
+                        <button type="button" class="bg-gray-400 text-white py-2 px-4 rounded-full hover:bg-gray-500 transition duration-300 ease-in-out" onclick="resetProductForm();">
+                            ยกเลิก
+                        </button>
+                    </div>
+                </form>
+                <div id="product-form-message" class="text-green-600 text-sm mt-4 hidden"></div>
+            </div>
+
+            <div class="max-w-4xl mx-auto mt-8">
+                <h3 class="text-2xl font-bold text-blue-700 mb-4">รายการสินค้าปัจจุบัน</h3>
+                <table class="admin-table">
+                    <thead>
+                        <tr>
+                            <th>ชื่อสินค้า</th>
+                            <th>ราคา</th>
+                            <th>จัดการ</th>
+                        </tr>
+                    </thead>
+                    <tbody id="product-list-body">
+                        <!-- Product list will be rendered here by JS -->
+                    </tbody>
+                </table>
+            </div>
+        </section>
+
+        <!-- Key Management Section -->
+        <section id="key-management-section" class="page-section bg-white shadow-xl rounded-xl p-8 md:p-12 mt-4">
+            <h2 class="text-4xl font-bold text-center mb-8 text-blue-800">จัดการคีย์เกม</h2>
+            <button class="bg-blue-600 text-white py-2 px-4 rounded-full hover:bg-blue-700 transition duration-300 ease-in-out mb-6" onclick="showPage('admin-dashboard-section'); updateAdminDashboardSummary();">
+                &larr; กลับไปที่แผงควบคุม
+            </button>
+            <div class="max-w-4xl mx-auto bg-blue-50 p-6 rounded-lg shadow-md border border-blue-200">
+                <h3 class="text-2xl font-bold text-blue-700 mb-4">เพิ่มคีย์ใหม่</h3>
+                <div class="mb-4">
+                    <label for="key-product-select" class="block text-gray-700 text-sm font-bold mb-2">เลือกสินค้า:</label>
+                    <select id="key-product-select" class="shadow appearance-none border rounded w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:shadow-outline focus:border-blue-500">
+                        <!-- Options will be populated by JS -->
+                    </select>
+                </div>
+                <div class="mb-4">
+                    <label for="key-code-input" class="block text-gray-700 text-sm font-bold mb-2">รหัสคีย์ (Key Code):</label>
+                    <textarea id="key-code-input" class="shadow appearance-none border rounded w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:shadow-outline focus:border-blue-500" rows="5" placeholder="ใส่รหัสคีย์ทีละบรรทัด"></textarea>
+                </div>
+                <button class="bg-blue-600 text-white py-2 px-4 rounded-full hover:bg-blue-700 transition duration-300 ease-in-out" onclick="addKeys();">
+                    เพิ่มคีย์
+                </button>
+                <div id="key-management-message" class="text-green-600 text-sm mt-2 hidden"></div>
+            </div>
+
+            <div class="max-w-4xl mx-auto mt-8">
+                <h3 class="text-2xl font-bold text-blue-700 mb-4">รายการคีย์ทั้งหมด</h3>
+                <div id="key-lists">
+                    <!-- Key lists for each product will be rendered here by JS -->
+                </div>
+            </div>
+        </section>
+
+        <!-- Slip Verification Section -->
+        <section id="slip-verification-section" class="page-section bg-white shadow-xl rounded-xl p-8 md:p-12 mt-4">
+            <h2 class="text-4xl font-bold text-center mb-8 text-blue-800">ตรวจสอบสลิปการชำระเงิน</h2>
+            <button class="bg-blue-600 text-white py-2 px-4 rounded-full hover:bg-blue-700 transition duration-300 ease-in-out mb-6" onclick="showPage('admin-dashboard-section'); updateAdminDashboardSummary();">
+                &larr; กลับไปที่แผงควบคุม
+            </button>
+            <div id="pending-slips-list" class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <!-- Pending slips will be rendered here by JS -->
+            </div>
+            <div id="no-slips-message" class="text-center text-gray-500 mt-8 hidden">
+                <p class="text-xl">ไม่มีสลิปที่ต้องตรวจสอบในขณะนี้</p>
+            </div>
+        </section>
+        
+        <!-- User's Inbox Section -->
+        <section id="inbox-section" class="page-section bg-white shadow-xl rounded-xl p-8 md:p-12 mt-4">
+            <h2 class="text-4xl font-bold text-center mb-8 text-blue-800">กล่องจดหมายของคุณ</h2>
+            <div id="inbox-content" class="space-y-4">
+                <!-- Inbox messages will be rendered here by JS -->
+            </div>
+            <div id="no-inbox-message" class="text-center text-gray-500 mt-8 hidden">
+                <p class="text-xl">คุณยังไม่มีข้อความ</p>
+            </div>
+        </section>
+
+        <!-- User Management Section -->
+        <section id="user-management-section" class="page-section bg-white shadow-xl rounded-xl p-8 md:p-12 mt-4">
+            <h2 class="text-4xl font-bold text-center mb-8 text-blue-800">จัดการผู้ใช้งาน</h2>
+            <button class="bg-blue-600 text-white py-2 px-4 rounded-full hover:bg-blue-700 transition duration-300 ease-in-out mb-6" onclick="showPage('admin-dashboard-section'); updateAdminDashboardSummary();">
+                &larr; กลับไปที่แผงควบคุม
+            </button>
+            <div class="max-w-4xl mx-auto bg-blue-50 p-6 rounded-lg shadow-md border border-blue-200">
+                <h3 class="text-2xl font-bold text-blue-700 mb-4">รายการผู้ใช้งานทั้งหมด</h3>
+                <table class="admin-table">
+                    <thead>
+                        <tr>
+                            <th>ชื่อผู้ใช้</th>
+                            <th>อีเมล</th>
+                            <th>User ID</th>
+                            <th>เป็นแอดมิน</th>
+                        </tr>
+                    </thead>
+                    <tbody id="user-list-body">
+                        <!-- User list will be rendered here by JS -->
+                    </tbody>
+                </table>
+                <div id="user-management-message" class="text-green-600 text-sm mt-4 hidden"></div>
+            </div>
+        </section>
+        
+    </main>
+
+    <footer class="bg-blue-700 text-white text-center py-6 mt-8 rounded-t-xl">
+        <div class="container mx-auto px-4">
+            <p>&copy; 2025 zobashop. All Rights Reserved.</p>
+            <p>
+                <a href="#" class="hover:underline" onclick="showPage('contact-section'); return false;">ติดต่อเรา</a> |
+                <a href="#" class="hover:underline" onclick="showPage('promotions-section'); return false;">โปรโมชั่น</a> 
+                <!-- ลิงก์ "เข้าสู่ระบบผู้ดูแลระบบ" ถูกลบออกแล้ว -->
+            </p>
+        </div>
+    </footer>
